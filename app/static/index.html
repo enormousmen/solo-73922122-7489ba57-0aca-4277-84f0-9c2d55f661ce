@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DEM 拼接 · EPSG:3857 COG</title>
+<style>
+  :root { --bd:#d0d7de; --bg:#f6f8fa; --fg:#1f2328; --mut:#57606a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"Segoe UI","Noto Sans SC",sans-serif; color:var(--fg); background:var(--bg); }
+  header { background:#0b3d66; color:#fff; padding:14px 20px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; font-size:12px; opacity:.85; }
+  main { max-width:960px; margin:18px auto; padding:0 16px; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:8px; padding:14px 16px; margin-bottom:14px; }
+  .card h2 { margin:0 0 10px; font-size:15px; }
+  .hint { color:var(--mut); font-size:12px; }
+  ul#planList { list-style:none; margin:8px 0 0; padding:0; }
+  ul#planList li { display:flex; align-items:center; gap:8px; border:1px solid var(--bd); border-radius:6px; padding:6px 10px; margin-top:6px; background:#fff; }
+  ul#planList li .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tag { font-size:11px; padding:1px 6px; border-radius:10px; background:#ddf4ff; color:#0550ae; flex:none; }
+  .tag.sample { background:#dafbe1; color:#116329; }
+  button { cursor:pointer; border:1px solid var(--bd); background:#f6f8fa; border-radius:6px; padding:4px 10px; font-size:13px; }
+  button:hover { background:#eaeef2; }
+  button.primary { background:#1f6feb; border-color:#1f6feb; color:#fff; padding:7px 18px; font-size:14px; }
+  button.primary:hover { background:#1a62d0; }
+  button.danger { background:#cf222e; border-color:#cf222e; color:#fff; }
+  button.danger:hover { background:#a40e26; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  input[type=number] { width:120px; padding:5px 8px; border:1px solid var(--bd); border-radius:6px; font-size:14px; }
+  .samples label { display:inline-flex; align-items:center; gap:4px; margin:4px 14px 4px 0; }
+  .task { border:1px solid var(--bd); border-radius:8px; background:#fff; padding:12px 14px; margin-bottom:10px; }
+  .task .head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .badge { font-size:12px; font-weight:600; padding:2px 10px; border-radius:12px; }
+  .b-QUEUED { background:#fff8c5; color:#7d4e00; }
+  .b-RUNNING { background:#ddf4ff; color:#0550ae; }
+  .b-DONE { background:#dafbe1; color:#116329; }
+  .b-FAILED { background:#ffebe9; color:#a40e26; }
+  .b-CANCELLED { background:#eaeef2; color:#57606a; }
+  .meta { color:var(--mut); font-size:12px; margin-top:6px; word-break:break-all; }
+  .result { background:#f6f8fa; border:1px solid var(--bd); border-radius:6px; padding:8px 10px; margin-top:8px; font-size:13px; }
+  .err { color:#a40e26; font-size:12px; margin-top:6px; white-space:pre-wrap; }
+  details { margin-top:6px; font-size:12px; color:var(--mut); }
+  pre { background:#0b3d66; color:#d8e6f3; padding:8px; border-radius:6px; overflow:auto; max-height:120px; font-size:11px; }
+  a.dl { display:inline-block; margin-top:8px; background:#1a7f37; color:#fff; text-decoration:none; padding:5px 14px; border-radius:6px; }
+  a.dl:hover { background:#116329; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>航测 DEM 拼接服务</h1>
+  <p>最多 4 份单波段 GeoTIFF → 统一重投影 EPSG:3857 → 镶嵌 → 带概览 COG。重叠处列表靠后的文件优先,NoData 不覆盖已有高程。</p>
+</header>
+<main>
+  <section class="card">
+    <h2>1. 选择数据(单波段 GeoTIFF,须含坐标系)</h2>
+    <input type="file" id="fileInput" multiple accept=".tif,.tiff">
+    <div class="samples" style="margin-top:10px">
+      <div class="hint">或勾选服务器样例:</div>
+      <div id="sampleList">加载中…</div>
+      <button id="addSamples" type="button">将选中样例加入列表</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>2. 覆盖顺序(最多 4 份)</h2>
+    <div class="hint">重叠区域:<b>列表越靠下,有效像元优先级越高</b>;NoData 不会盖掉已有高程。</div>
+    <ul id="planList"></ul>
+  </section>
+
+  <section class="card">
+    <h2>3. 目标像元边长并提交</h2>
+    <div class="row">
+      <label>像元边长(米,&gt;0): <input type="number" id="res" value="2" min="0.000001" step="any"></label>
+      <button class="primary" id="submitBtn" type="button">开始拼接</button>
+      <span class="hint" id="submitMsg"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2 style="font-size:15px">任务(最多 2 个并行,其余排队)</h2>
+    <div id="tasks"></div>
+  </section>
+</main>
+
+<script>
+const plan = [];  // {kind:'upload', file:File} | {kind:'sample', name:string}
+const MAX = 4;
+
+const $ = id => document.getElementById(id);
+
+function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function fmtBytes(n){ return n>1048576 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB'; }
+
+function renderPlan(){
+  const ul = $('planList'); ul.innerHTML='';
+  plan.forEach((e,i)=>{
+    const li = document.createElement('li');
+    const name = e.kind==='upload' ? e.file.name : e.name;
+    li.innerHTML = `<span class="tag ${e.kind==='sample'?'sample':''}">${e.kind==='upload'?'上传':'样例'}</span>
+      <span class="nm">${esc(name)}</span>`;
+    const up=document.createElement('button'); up.textContent='↑'; up.disabled=i===0;
+    up.onclick=()=>{ [plan[i-1],plan[i]]=[plan[i],plan[i-1]]; renderPlan(); };
+    const dn=document.createElement('button'); dn.textContent='↓'; dn.disabled=i===plan.length-1;
+    dn.onclick=()=>{ [plan[i+1],plan[i]]=[plan[i],plan[i+1]]; renderPlan(); };
+    const rm=document.createElement('button'); rm.textContent='✕';
+    rm.onclick=()=>{ plan.splice(i,1); renderPlan(); };
+    li.append(up,dn,rm); ul.appendChild(li);
+  });
+  if(!plan.length){ ul.innerHTML='<li class="hint">尚未添加文件</li>'; }
+}
+
+$('fileInput').addEventListener('change', ev=>{
+  for(const f of ev.target.files){
+    if(plan.length>=MAX){ alert(`最多 ${MAX} 份文件`); break; }
+    plan.push({kind:'upload', file:f});
+  }
+  ev.target.value=''; renderPlan();
+});
+
+async function loadSamples(){
+  try{
+    const r = await fetch('/api/samples'); const arr = await r.json();
+    const box = $('sampleList');
+    if(!arr.length){ box.textContent='(暂无样例)'; return; }
+    box.innerHTML = arr.map(s=>
+      `<label><input type="checkbox" value="${esc(s.name)}"> ${esc(s.name)}
+       <span class="hint">(${fmtBytes(s.size)}${s.description?', '+esc(s.description):''})</span></label>`
+    ).join('');
+  }catch(e){ $('sampleList').textContent='样例加载失败: '+e; }
+}
+
+$('addSamples').addEventListener('click', ()=>{
+  document.querySelectorAll('#sampleList input:checked').forEach(cb=>{
+    if(plan.length>=MAX){ alert(`最多 ${MAX} 份文件`); return; }
+    plan.push({kind:'sample', name:cb.value}); cb.checked=false;
+  });
+  renderPlan();
+});
+
+$('submitBtn').addEventListener('click', async ()=>{
+  const msg = $('submitMsg'); msg.textContent='';
+  const res = parseFloat($('res').value);
+  if(!(res>0)){ msg.textContent='像元边长必须大于 0'; return; }
+  if(!plan.length){ msg.textContent='请先添加文件'; return; }
+  const fd = new FormData();
+  fd.append('resolution', res);
+  const planJson=[]; let ui=0;
+  for(const e of plan){
+    if(e.kind==='upload'){ fd.append('files', e.file, e.file.name); planJson.push({type:'upload', index:ui++}); }
+    else planJson.push({type:'sample', name:e.name});
+  }
+  fd.append('plan', JSON.stringify(planJson));
+  $('submitBtn').disabled=true;
+  try{
+    const r = await fetch('/api/tasks', {method:'POST', body:fd});
+    const j = await r.json();
+    if(!r.ok){ msg.textContent='提交失败: '+(j.detail||r.status); }
+    else { msg.textContent='已创建任务 '+j.id; plan.length=0; renderPlan(); loadTasks(); }
+  }catch(e){ msg.textContent='提交失败: '+e; }
+  finally{ $('submitBtn').disabled=false; }
+});
+
+async function cancelTask(id){
+  await fetch(`/api/tasks/${id}/cancel`, {method:'POST'});
+  loadTasks();
+}
+
+function taskHtml(t){
+  const files = t.filenames.map(esc).join(' → ');
+  let body = `<div class="meta">文件(优先级升序): ${files}<br>像元边长: ${t.resolution} m · 创建于 ${new Date(t.created_at*1000).toLocaleTimeString()}</div>`;
+  if(t.error) body += `<div class="err">${esc(t.error)}</div>`;
+  if(t.log_tail && (t.status==='RUNNING'||t.status==='FAILED'))
+    body += `<details><summary>GDAL 输出</summary><pre>${esc(t.log_tail)}</pre></details>`;
+  if(t.status==='DONE' && t.result){
+    const r=t.result, e=r.extent.map(v=>v.toFixed(2)).join(', ');
+    body += `<div class="result">尺寸: <b>${r.width} × ${r.height}</b> 像元 ·
+      范围(${r.crs}, 米): [${e}] · 文件: ${fmtBytes(r.file_size_bytes)}</div>
+      <a class="dl" href="${t.download_url}">下载 COG</a>`;
+  }
+  if(t.status==='QUEUED' || t.status==='RUNNING')
+    body += ` <button class="danger" style="margin-top:8px" onclick="cancelTask('${t.id}')">取消任务</button>`;
+  return `<div class="task"><div class="head">
+    <span class="badge b-${t.status}">${t.status}${t.stage?' · '+t.stage:''}</span>
+    <b>#${t.id}</b></div>${body}</div>`;
+}
+
+async function loadTasks(){
+  try{
+    const r = await fetch('/api/tasks'); const arr = await r.json();
+    $('tasks').innerHTML = arr.length ? arr.map(taskHtml).join('') : '<div class="hint">暂无任务</div>';
+  }catch(e){ /* 忽略瞬时错误 */ }
+}
+
+renderPlan(); loadSamples(); loadTasks();
+setInterval(loadTasks, 1500);
+</script>
+</body>
+</html>

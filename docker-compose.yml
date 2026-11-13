@@ -1,0 +1,28 @@
+name: dem-mosaic
+
+services:
+  # 一次性任务:生成不同坐标系/重叠/NoData 的演示样例,完成后退出
+  samplegen:
+    build: .
+    image: dem-mosaic-app:local
+    volumes:
+      - ./data:/data
+    command: ["python3", "/samples/generate_samples.py", "/data/samples"]
+    restart: "no"
+
+  # Web 服务:上传/排序/拼接/取消/下载
+  web:
+    image: dem-mosaic-app:local
+    build: .
+    init: true
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      DATA_DIR: /data
+      SAMPLES_DIR: /data/samples
+      MAX_PARALLEL: "2"
+    depends_on:
+      samplegen:
+        condition: service_completed_successfully
