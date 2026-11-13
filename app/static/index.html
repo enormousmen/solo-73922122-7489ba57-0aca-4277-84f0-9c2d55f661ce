@@ -73,8 +73,18 @@
     <h2>3. 目标像元边长并提交</h2>
     <div class="row">
       <label>像元边长(米,&gt;0): <input type="number" id="res" value="2" min="0.000001" step="any"></label>
+      <label style="display:inline-flex;align-items:center;gap:4px">
+        <input type="checkbox" id="slowValidate"> 慢校验演示
+      </label>
+      <label>每份文件额外校验延迟(秒):
+        <input type="number" id="validateDelay" value="8" min="0" max="30" step="1" style="width:90px" disabled>
+      </label>
       <button class="primary" id="submitBtn" type="button">开始拼接</button>
       <span class="hint" id="submitMsg"></span>
+    </div>
+    <div class="hint" style="margin-top:6px">
+      慢校验会在每份文件的 <code>gdalinfo</code> 前增加可控延迟,便于在输入准备阶段体验取消:
+      取消后不再保存后续输入,并终止、回收校验进程。
     </div>
   </section>
 
@@ -152,20 +162,46 @@ $('submitBtn').addEventListener('click', async ()=>{
     else planJson.push({type:'sample', name:e.name});
   }
   fd.append('plan', JSON.stringify(planJson));
+  fd.append('slow_validate', $('slowValidate').checked ? 'true' : 'false');
+  fd.append('validate_delay', parseFloat($('validateDelay').value) || 0);
   $('submitBtn').disabled=true;
   try{
     const r = await fetch('/api/tasks', {method:'POST', body:fd});
     const j = await r.json();
     if(!r.ok){ msg.textContent='提交失败: '+(j.detail||r.status); }
-    else { msg.textContent='已创建任务 '+j.id; plan.length=0; renderPlan(); loadTasks(); }
+    else if(j.status==='CANCELLED'){
+      // 准备阶段被取消:创建请求直接返回取消结果,记录保留在任务列表
+      msg.textContent='任务 '+j.id+' 已在输入准备阶段取消';
+      msg.style.color='#a40e26';
+      loadTasks();
+    } else {
+      msg.textContent='已创建任务 '+j.id;
+      msg.style.color='';
+      plan.length=0; renderPlan(); loadTasks();
+    }
   }catch(e){ msg.textContent='提交失败: '+e; }
   finally{ $('submitBtn').disabled=false; }
 });
 
-async function cancelTask(id){
-  await fetch(`/api/tasks/${id}/cancel`, {method:'POST'});
+$('slowValidate').addEventListener('change', ev=>{
+  $('validateDelay').disabled = !ev.target.checked;
+});
+
+async function cancelTask(id, btn){
+  if(btn) btn.disabled = true;  // 防止重复点击触发重复取消
+  try{
+    const r = await fetch(`/api/tasks/${id}/cancel`, {method:'POST'});
+    if(!r.ok){
+      let detail = r.status;
+      try{ detail = (await r.json()).detail || r.status; }catch(_){}
+      alert('取消失败: '+detail);
+      if(btn) btn.disabled=false;
+    }
+  }catch(e){ alert('取消失败: '+e); if(btn) btn.disabled=false; }
   loadTasks();
 }
+
+const STAGE_LABEL = {PREPARING:'输入准备', MOSAIC:'镶嵌', COG:'COG 转换', METADATA:'元数据'};
 
 function taskHtml(t){
   const files = t.filenames.map(esc).join(' → ');
@@ -180,9 +216,10 @@ function taskHtml(t){
       <a class="dl" href="${t.download_url}">下载 COG</a>`;
   }
   if(t.status==='QUEUED' || t.status==='RUNNING')
-    body += ` <button class="danger" style="margin-top:8px" onclick="cancelTask('${t.id}')">取消任务</button>`;
+    body += ` <button class="danger" style="margin-top:8px" onclick="cancelTask('${t.id}', this)">取消任务</button>`;
+  const stageLabel = t.stage ? (STAGE_LABEL[t.stage] || t.stage) : '';
   return `<div class="task"><div class="head">
-    <span class="badge b-${t.status}">${t.status}${t.stage?' · '+t.stage:''}</span>
+    <span class="badge b-${t.status}">${t.status}${stageLabel?' · '+stageLabel:''}</span>
     <b>#${t.id}</b></div>${body}</div>`;
 }
 

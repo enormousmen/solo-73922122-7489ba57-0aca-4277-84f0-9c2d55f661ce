@@ -23,6 +23,9 @@ services:
       DATA_DIR: /data
       SAMPLES_DIR: /data/samples
       MAX_PARALLEL: "2"
+      # 每份输入 gdalinfo 校验的基线延迟(秒),0=关闭;用于演示输入准备阶段的慢校验。
+      # 也可在网页勾选"慢校验演示"并设置每次提交的额外延迟。
+      VALIDATE_DELAY: "0"
     depends_on:
       samplegen:
         condition: service_completed_successfully
